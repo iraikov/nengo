@@ -1,3 +1,5 @@
+import inspect
+
 import numpy as np
 
 from nengo.builder import Builder, Operator, Signal
@@ -74,10 +76,19 @@ class SimNeurons(Operator):
         J = signals[self.J]
         state = {name: signals[self.sets[idx]] for name, idx in self.state.items()}
 
-        def step_simneurons():
-            self.neurons.step(dt, J, **state)
+        argspec = inspect.getfullargspec(self.neurons.step_math)
+        if "rng" in argspec.args:
 
-        return step_simneurons
+            def step_simneurons_withrng():
+                self.neurons.step_math(dt, J, rng, **state)
+
+            return step_simneurons_withrng
+        else:
+
+            def step_simneurons():
+                self.neurons.step_math(dt, J, **state)
+
+            return step_simneurons
 
 
 @Builder.register(NeuronType)

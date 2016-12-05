@@ -276,7 +276,7 @@ class NeuronType(FrozenObject):
             self.step(dt=1.0, J=J, rates=out)
         return out
 
-    def step(self, dt, J, **state):
+    def step(self, dt, J, rng=None, **state):
         """Implements the differential equation for this neuron type.
 
         At a minimum, NeuronType subclasses must implement this method.
@@ -291,8 +291,25 @@ class NeuronType(FrozenObject):
             Input currents associated with each neuron.
         state : {str: array_like}
             State variables associated with the population.
+        rng : `numpy.random.RandomState`
+            Random number generator for stochastic neuron types.
+
+        Notes
+        -----
+
+        The ``rng`` parameter on ``step_math`` is optional. A random number
+        generator will be provided only if it appears in the method signature.
         """
         raise NotImplementedError("Neurons must provide step")
+
+
+class NeuronTypeParam(Parameter):
+
+    equatable = True
+
+    def coerce(self, instance, neurons):
+        self.check_type(instance, neurons, NeuronType)
+        return super().coerce(instance, neurons)
 
 
 class Direct(NeuronType):
@@ -403,7 +420,7 @@ class SpikingRectifiedLinear(RectifiedLinear):
 
         voltage += np.maximum(J, 0) * dt
         n_spikes = np.floor(voltage)
-        spikes[:] = self.amplitude * n_spikes / dt
+        spikes[:] = (self.amplitude / dt) * n_spikes
         voltage -= n_spikes
 
 
@@ -903,7 +920,147 @@ class Izhikevich(NeuronType):
         recovery[spikes > 0] = recovery[spikes > 0] + self.reset_recovery
 
 
-class NeuronTypeParam(Parameter):
-    def coerce(self, instance, neurons):
-        self.check_type(instance, neurons, NeuronType)
-        return super().coerce(instance, neurons)
+class _Spiking(NeuronType):
+    """Abstract base class for neuron models that turn rate models into spiking ones"""
+
+    base_type = NeuronTypeParam("base_type")
+    amplitude = NumberParam("amplitude", low=0, low_open=True)
+
+    def __init__(self, base_type, amplitude=1.0):
+        super().__init__()
+
+        self.base_type = base_type
+        if "rates" not in base_type.probeable:
+            raise ValidationError(
+                "Must be a rate neuron type", attr="base_type", obj=self
+            )
+
+        self.negative = base_type.negative
+        self.amplitude = amplitude
+
+    @property
+    def probeable(self):
+        base = list(self.base_type.probeable)
+        base[base.index("rates")] = "spikes"
+        return tuple(base)
+
+    def gain_bias(self, max_rates, intercepts):
+        return self.base_type.gain_bias(max_rates, intercepts)
+
+    def max_rates_intercepts(self, gain, bias):
+        return self.base_type.max_rates_intercepts(gain, bias)
+
+    def rates(self, x, gain, bias):
+        return self.base_type.rates(x, gain, bias)
+
+
+class RegularSpiking(_Spiking):
+    """Turn a rate neuron model into a spiking one with regular inter-spike intervals.
+
+    Spikes at regular intervals based on the rates of the base neuron type. [1]_
+
+    Parameters
+    ----------
+    base_type : NeuronType
+        A rate-based neuron type to convert to a regularly spiking neuron.
+    amplitude : float
+        Scaling factor on the neuron output. Corresponds to the relative
+        amplitude of the output spikes of the neuron.
+
+    References
+    ----------
+    .. [1] Voelker, A. R., Rasmussen, D., & Eliasmith, C. (2020). A Spike in
+       Performance: Training Hybrid-Spiking Neural Networks with Quantized Activation
+       Functions. arXiv preprint arXiv:2002.03553. (https://arxiv.org/abs/2002.03553)
+    """
+
+    def __init__(self, base_type, amplitude=1.0):
+        super().__init__(base_type, amplitude=amplitude)
+
+        if "voltage" in base_type.probeable:
+            raise ValidationError(
+                "Cannot already include `voltage` in `probable`",
+                attr="base_type",
+                obj=self,
+            )
+
+    @property
+    def probeable(self):
+        base = list(self.base_type.probeable)
+        base[base.index("rates")] = "spikes"
+        base.insert(1 if base[0] == "spikes" else 0, "voltage")
+        return tuple(base)
+
+    def step_math(self, dt, J, output, voltage, *base_states):
+        # Sets output to the desired rates
+        self.base_type.step_math(dt, J, output, *base_states)
+
+        voltage += dt * output
+        n_spikes = np.floor(voltage)
+        output[...] = (self.amplitude / dt) * n_spikes
+        voltage -= n_spikes
+
+
+class PoissonSpiking(_Spiking):
+    """Turn a rate neuron model into a spiking one with Poisson spiking statistics.
+
+    Spikes with Poisson probability based on the rates of the base neuron type.
+
+    Parameters
+    ----------
+    base_type : NeuronType
+        A rate-based neuron type to convert to a Poisson spiking neuron.
+    amplitude : float
+        Scaling factor on the neuron output. Corresponds to the relative
+        amplitude of the output spikes of the neuron.
+    """
+
+    def step_math(self, dt, J, output, rng, *base_states):
+        # Sets output to the desired rates
+        rates = np.zeros_like(output)
+        self.base_type.step_math(dt, J, rates, *base_states)
+
+        signs = None
+        if self.negative:
+            signs = np.sign(rates)
+            rates = np.abs(rates)
+
+        n_spikes = rng.poisson(rates * dt, output.size)
+        output[...] = (self.amplitude / dt) * (
+            n_spikes if signs is None else n_spikes * signs
+        )
+
+
+class StochasticSpiking(_Spiking):
+    """Turn a rate neuron model into a spiking one using stochastic rounding.
+
+    The expected number of spikes per timestep ``e = dt * r`` is determined by the
+    base type firing rate ``r`` and the timestep ``dt``. Given the fractional part ``f``
+    and integer part ``q`` of ``e``, the number of generated spikes is ``q`` with
+    probability ``1 - f`` and ``q + 1`` with probability ``f``. For ``e`` much less than
+    one, this is very similar to Poisson statistics.
+
+    Parameters
+    ----------
+    base_type : NeuronType
+        A rate-based neuron type to convert to a Poisson spiking neuron.
+    amplitude : float
+        Scaling factor on the neuron output. Corresponds to the relative
+        amplitude of the output spikes of the neuron.
+    """
+
+    def step_math(self, dt, J, output, rng, *base_states):
+        # Sets output to the desired rates
+        rates = np.zeros_like(output)
+        self.base_type.step_math(dt, J, rates, *base_states)
+
+        signs = None
+        if self.negative:
+            signs = np.sign(rates)
+            rates = np.abs(rates)
+
+        frac, n_spikes = np.modf(dt * rates)
+        n_spikes += rng.random_sample(size=frac.shape) < frac
+        output[...] = (self.amplitude / dt) * (
+            n_spikes if signs is None else n_spikes * signs
+        )
