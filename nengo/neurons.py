@@ -404,7 +404,7 @@ class SpikingRectifiedLinear(RectifiedLinear):
 
 
 class Sigmoid(NeuronType):
-    """A neuron model whose response curve is a sigmoid.
+    """A non-spiking neuron model whose response curve is a sigmoid.
 
     Since the tuning curves are strictly positive, the ``intercepts``
     correspond to the inflection point of each sigmoid. That is,
@@ -413,7 +413,7 @@ class Sigmoid(NeuronType):
 
     state = {"rates": Choice([0])}
 
-    tau_ref = NumberParam("tau_ref", low=0)
+    tau_ref = NumberParam("tau_ref", low=0, low_open=True)
 
     def __init__(self, tau_ref=0.0025, initial_state=None):
         super().__init__(initial_state)
@@ -423,8 +423,17 @@ class Sigmoid(NeuronType):
         """Analytically determine gain, bias."""
         max_rates = np.array(max_rates, dtype=float, copy=False, ndmin=1)
         intercepts = np.array(intercepts, dtype=float, copy=False, ndmin=1)
-        lim = 1.0 / self.tau_ref
-        inverse = -np.log(lim / max_rates - 1.0)
+
+        inv_tau_ref = 1.0 / self.tau_ref
+        if not np.all(max_rates < inv_tau_ref):
+            raise ValidationError(
+                "Max rates must be below the inverse "
+                "refractory period (%0.3f)" % inv_tau_ref,
+                attr="max_rates",
+                obj=self,
+            )
+
+        inverse = -np.log(inv_tau_ref / max_rates - 1.0)
         gain = inverse / (1.0 - intercepts)
         bias = inverse - gain
         return gain, bias
@@ -433,13 +442,12 @@ class Sigmoid(NeuronType):
         """Compute the inverse of gain_bias."""
         inverse = gain + bias
         intercepts = 1 - inverse / gain
-        lim = 1.0 / self.tau_ref
-        max_rates = lim / (1 + np.exp(-inverse))
+        max_rates = (1.0 / self.tau_ref) / (1 + np.exp(-inverse))
         return max_rates, intercepts
 
     def step(self, dt, J, rates):
         """Implement the sigmoid nonlinearity."""
-        rates[...] = (1.0 / self.tau_ref) / (1.0 + np.exp(-J))
+        rates[...] = (1.0 / self.tau_ref) / (1 + np.exp(-J))
 
 
 class LIFRate(NeuronType):
@@ -476,7 +484,7 @@ class LIFRate(NeuronType):
         intercepts = np.array(intercepts, dtype=float, copy=False, ndmin=1)
 
         inv_tau_ref = 1.0 / self.tau_ref if self.tau_ref > 0 else np.inf
-        if np.any(max_rates > inv_tau_ref):
+        if not np.all(max_rates < inv_tau_ref):
             raise ValidationError(
                 "Max rates must be below the inverse "
                 "refractory period (%0.3f)" % inv_tau_ref,
