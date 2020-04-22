@@ -29,6 +29,10 @@ Release history
 - Added the ``step_order`` attribute to ``nengo.Simulator``, which contains an
   ordered list of the operations run on each timestep.
   (`#1615 <https://github.com/nengo/nengo/pull/1615>`__)
+- Added the ``Tanh`` neuron type to simulate hyperbolic tangent rate neurons. This is
+  the first Nengo neuron type that allows negative outputs; ``NeuronTypes`` now have
+  a ``.negative`` attribute to indicate whether it may have negative outputs.
+  (`#1609 <https://github.com/nengo/nengo/pull/1609>`__)
 
 **Changed**
 
