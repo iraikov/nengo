@@ -2,6 +2,7 @@ from nengo.builder import Builder, Operator, Signal
 from nengo.dists import Distribution
 from nengo.exceptions import BuildError
 from nengo.neurons import NeuronType
+from nengo.rc import rc
 from nengo.utils.numpy import is_array_like
 
 
@@ -80,6 +81,37 @@ class SimNeurons(Operator):
         return step_simneurons
 
 
+def get_neuron_states(model, neurontype, neurons, dtype=None):
+    """Get the initial neuron state values for the neuron type."""
+    dtype = rc.float_dtype if dtype is None else dtype
+    ens = neurons.ensemble
+    rng = np.random.RandomState(model.seeds[ens] + 1)
+    n_neurons = neurons.size_in
+
+    if isinstance(ens.initial_phase, Distribution):
+        phases = ens.initial_phase.sample(n_neurons, rng=rng)
+    else:
+        phases = ens.initial_phase
+
+    if phases.ndim != 1 or phases.size != n_neurons:
+        raise BuildError("`initial_phase` array must be 1-D of length `n_neurons`")
+
+    return neurontype.make_neuron_state(phases, model.dt, dtype=dtype)
+
+
+def sample_state_init(state_init, n_neurons, dtype=None):
+    """Sample a state init value, ensuring the correct size. """
+    dtype = rc.float_dtype if dtype is None else dtype
+
+    if isinstance(state_init, Distribution):
+        raise NotImplementedError()
+
+    if not is_array_like(state_init):
+        raise BuildError("State init must be a distribution or array-like")
+
+    return state_init
+
+
 @Builder.register(NeuronType)
 def build_neurons(model, neurontype, neurons):
     """Builds a `.NeuronType` object into a model.
@@ -102,30 +134,18 @@ def build_neurons(model, neurontype, neurons):
     Does not modify ``model.params[]`` and can therefore be called
     more than once with the same `.NeuronType` instance.
     """
-    dtype = model.sig[neurons]["in"].dtype
     n_neurons = neurons.size_in
-    state_init = neurontype.make_state(n_neurons, model.dt, dtype=dtype)
+    state_init = get_neuron_states(model, neurontype, neurons)
     state = {}
 
     for key, init in state_init.items():
         if key in model.sig[neurons]:
             raise BuildError("State name %r overlaps with existing signal name" % key)
 
-        if isinstance(init, Distribution):
-            raise NotImplementedError()
-
-        if not is_array_like(init):
-            raise BuildError("State init must be a distribution or array-like")
-
-        if init.ndim == 1 and init.size != n_neurons or init.ndim > 1:
-            raise BuildError(
-                "State init array must be 0-D, or 1-D of length `n_neurons`"
-            )
-
-        model.sig[neurons][key] = Signal(
-            initial_value=init, name="%s.%s" % (neurons, key)
+        state[key] = model.sig[neurons][key] = Signal(
+            initial_value=sample_state_init(init, n_neurons),
+            name="%s.%s" % (neurons, key),
         )
-        state[key] = model.sig[neurons][key]
 
     model.sig[neurons]["out"] = state[neurontype.state[0]]
     model.add_op(

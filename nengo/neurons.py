@@ -174,7 +174,19 @@ class NeuronType(FrozenObject):
 
     def make_state(self, n_neurons, dt, dtype=None):
         dtype = rc.float_dtype if dtype is None else dtype
-        return {name: np.zeros(n_neurons, dtype=dtype) for name in self.state}
+        state = {name: np.zeros(n_neurons, dtype=dtype) for name in self.state}
+        if "voltage" in state:
+            # apply phases to voltages
+            state["voltage"] = phases
+
+        return result
+
+        # # distribute phases equally across states (each neuron will be at a random
+        # # position between 0 and 1 in one of the states, and 0 in all other states)
+        # phase_frac, phase_int = np.modf(phases * len(states))
+        # return OrderedDict(
+        #     (state, (phase_int == i) * phase_frac) for i, state in enumerate(states)
+        # )
 
     def max_rates_intercepts(self, gain, bias):
         """Compute the max_rates and intercepts given gain and bias.

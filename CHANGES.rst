@@ -29,6 +29,10 @@ Release history
 - Added the ``step_order`` attribute to ``nengo.Simulator``, which contains an
   ordered list of the operations run on each timestep.
   (`#1615 <https://github.com/nengo/nengo/pull/1615>`__)
+- Added the ``initial_phase`` attribute to ``Ensemble``, to allow initial neuron phases
+  (i.e. voltages) to be modified. The default initial voltages are now chosen from
+  a uniform distribution, to help ensembles activate more quickly initially.
+  (`#1609 <https://github.com/nengo/nengo/pull/1609>`__)
 
 **Changed**
 
