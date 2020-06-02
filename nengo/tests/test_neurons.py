@@ -42,7 +42,7 @@ def test_lif_builtin(rng, allclose):
 
     spikes = np.zeros((int(t_final / dt),) + J.shape)
     for spikes_i in spikes:
-        lif.step_math(dt, J, spikes_i, voltage, reftime)
+        lif.step(dt, J, spikes_i, voltage, reftime)
 
     math_rates = lif.rates(x, gain, bias)
     sim_rates = spikes.mean(0)

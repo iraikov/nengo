@@ -1,13 +1,13 @@
-from collections import OrderedDict
 import warnings
 
 import numpy as np
 
 from nengo.exceptions import SimulationError, ValidationError
 from nengo.params import Parameter, NumberParam, FrozenObject
+from nengo.rc import rc
 
 
-def settled_firingrate(step_math, J, states, dt=0.001, settle_time=0.1, sim_time=1.0):
+def settled_firingrate(step, J, state, dt=0.001, settle_time=0.1, sim_time=1.0):
     """Compute firing rates (in Hz) for given vector input, ``x``.
 
     Unlike the default naive implementation, this approach takes into
@@ -18,11 +18,11 @@ def settled_firingrate(step_math, J, states, dt=0.001, settle_time=0.1, sim_time
 
     Parameters
     ----------
-    step_math : function
+    step : function
         the step function of the neuron type
     J : ndarray
         a vector of currents to generate firing rates from
-    *states : list of ndarrays
+    state : dict of ndarrays
         additional state needed by the step function
     """
     out = np.zeros_like(J)
@@ -31,11 +31,11 @@ def settled_firingrate(step_math, J, states, dt=0.001, settle_time=0.1, sim_time
     # Simulate for the settle time
     steps = int(settle_time / dt)
     for _ in range(steps):
-        step_math(dt, J, out, *states)
+        step(dt, J, out, **state)
     # Simulate for sim time, and keep track
     steps = int(sim_time / dt)
     for _ in range(steps):
-        step_math(dt, J, out, *states)
+        step(dt, J, out, **state)
         total += out
     return total / float(steps)
 
@@ -45,11 +45,25 @@ class NeuronType(FrozenObject):
 
     Attributes
     ----------
-    probeable : tuple
-        Signals that can be probed in the neuron population.
+    state : tuple
+        State variables held by the neuron type during simulation.
+        These elements can also be probed in the neuron population.
     """
 
-    probeable = ()
+    spiking = False
+    state = ()
+
+    @property
+    def probeable(self):
+        return (("spikes",) if self.spiking else ("rates",)) + self.state
+
+    @property
+    def step_math(self):
+        warnings.warn(
+            "'step_math' has been renamed to 'step'. This alias will be removed "
+            "in Nengo 4.0"
+        )
+        return self.step
 
     def current(self, x, gain, bias):
         """Compute current injected in each neuron given input, gain and bias.
@@ -155,6 +169,10 @@ class NeuronType(FrozenObject):
         bias[:] = J_tops - gain
         return gain, bias
 
+    def make_state(self, n_neurons, dt, dtype=None):
+        dtype = rc.float_dtype if dtype is None else dtype
+        return {name: np.zeros(n_neurons, dtype=dtype) for name in self.state}
+
     def max_rates_intercepts(self, gain, bias):
         """Compute the max_rates and intercepts given gain and bias.
 
@@ -213,14 +231,10 @@ class NeuronType(FrozenObject):
         """
         J = self.current(x, gain, bias)
         out = np.zeros_like(J)
-        self.step_math(dt=1.0, J=J, output=out)
+        self.step(dt=1.0, J=J, output=out)
         return out
 
-    def make_neuron_state(self, n_neurons, dt, dtype=None):
-        states = [p for p in self.probeable if p not in ("rates", "spikes")]
-        return OrderedDict((state, 0) for state in states)
-
-    def step_math(self, dt, J, output):
+    def step(self, dt, J, output):
         """Implements the differential equation for this neuron type.
 
         At a minimum, NeuronType subclasses must implement this method.
@@ -236,7 +250,7 @@ class NeuronType(FrozenObject):
         output : (n_neurons,) array_like
             Output activities associated with each neuron.
         """
-        raise NotImplementedError("Neurons must provide step_math")
+        raise NotImplementedError("Neurons must provide step")
 
 
 class Direct(NeuronType):
@@ -260,7 +274,7 @@ class Direct(NeuronType):
         """Always returns ``x``."""
         return np.array(x, dtype=float, copy=False, ndmin=1)
 
-    def step_math(self, dt, J, output):
+    def step(self, dt, J, output):
         """Raises an error if called.
 
         Rather than calling this function, the simulator will detect that
@@ -288,8 +302,6 @@ class RectifiedLinear(NeuronType):
         amplitude of the output of the neuron.
     """
 
-    probeable = ("rates",)
-
     amplitude = NumberParam("amplitude", low=0, low_open=True)
 
     def __init__(self, amplitude=1):
@@ -311,7 +323,7 @@ class RectifiedLinear(NeuronType):
         max_rates = gain * (1 - intercepts)
         return max_rates, intercepts
 
-    def step_math(self, dt, J, output):
+    def step(self, dt, J, output):
         """Implement the rectification nonlinearity."""
         output[...] = self.amplitude * np.maximum(0.0, J)
 
@@ -331,17 +343,18 @@ class SpikingRectifiedLinear(RectifiedLinear):
         amplitude of the output spikes of the neuron.
     """
 
-    probeable = ("spikes", "voltage")
+    spiking = True
+    state = ("voltage",)
 
     def rates(self, x, gain, bias):
         """Use RectifiedLinear to determine rates."""
 
         J = self.current(x, gain, bias)
         out = np.zeros_like(J)
-        RectifiedLinear.step_math(self, dt=1.0, J=J, output=out)
+        RectifiedLinear.step(self, dt=1.0, J=J, output=out)
         return out
 
-    def step_math(self, dt, J, spiked, voltage):
+    def step(self, dt, J, spiked, voltage):
         """Implement the integrate and fire nonlinearity."""
 
         voltage += np.maximum(J, 0) * dt
@@ -357,8 +370,6 @@ class Sigmoid(NeuronType):
     correspond to the inflection point of each sigmoid. That is,
     ``f(intercept) = 0.5`` where ``f`` is the pure sigmoid function.
     """
-
-    probeable = ("rates",)
 
     tau_ref = NumberParam("tau_ref", low=0)
 
@@ -384,7 +395,7 @@ class Sigmoid(NeuronType):
         max_rates = lim / (1 + np.exp(-inverse))
         return max_rates, intercepts
 
-    def step_math(self, dt, J, output):
+    def step(self, dt, J, output):
         """Implement the sigmoid nonlinearity."""
         output[...] = (1.0 / self.tau_ref) / (1.0 + np.exp(-J))
 
@@ -404,8 +415,6 @@ class LIFRate(NeuronType):
         Scaling factor on the neuron output. Corresponds to the relative
         amplitude of the output spikes of the neuron.
     """
-
-    probeable = ("rates",)
 
     tau_rc = NumberParam("tau_rc", low=0, low_open=True)
     tau_ref = NumberParam("tau_ref", low=0)
@@ -453,11 +462,11 @@ class LIFRate(NeuronType):
         """Always use LIFRate to determine rates."""
         J = self.current(x, gain, bias)
         out = np.zeros_like(J)
-        # Use LIFRate's step_math explicitly to ensure rate approximation
-        LIFRate.step_math(self, dt=1, J=J, output=out)
+        # Use LIFRate's step explicitly to ensure rate approximation
+        LIFRate.step(self, dt=1, J=J, output=out)
         return out
 
-    def step_math(self, dt, J, output):
+    def step(self, dt, J, output):
         """Implement the LIFRate nonlinearity."""
         j = J - 1
         output[:] = 0  # faster than output[j <= 0] = 0
@@ -487,7 +496,8 @@ class LIF(LIFRate):
         amplitude of the output spikes of the neuron.
     """
 
-    probeable = ("spikes", "voltage", "refractory_time")
+    spiking = True
+    state = ("voltage", "refractory_time")
 
     min_voltage = NumberParam("min_voltage", high=0)
 
@@ -495,7 +505,7 @@ class LIF(LIFRate):
         super().__init__(tau_rc=tau_rc, tau_ref=tau_ref, amplitude=amplitude)
         self.min_voltage = min_voltage
 
-    def step_math(self, dt, J, spiked, voltage, refractory_time):
+    def step(self, dt, J, spiked, voltage, refractory_time):
         # reduce all refractory times by dt
         refractory_time -= dt
 
@@ -561,7 +571,7 @@ class AdaptiveLIFRate(LIFRate):
        16.10 (2004): 2101-2124.
     """
 
-    probeable = ("rates", "adaptation")
+    state = ("adaptation",)
 
     tau_n = NumberParam("tau_n", low=0, low_open=True)
     inc_n = NumberParam("inc_n", low=0)
@@ -571,10 +581,10 @@ class AdaptiveLIFRate(LIFRate):
         self.tau_n = tau_n
         self.inc_n = inc_n
 
-    def step_math(self, dt, J, output, adaptation):
+    def step(self, dt, J, output, adaptation):
         """Implement the AdaptiveLIFRate nonlinearity."""
         n = adaptation
-        super().step_math(dt, J - n, output)
+        super().step(dt, J - n, output)
         n += (dt / self.tau_n) * (self.inc_n * output - n)
 
 
@@ -616,7 +626,8 @@ class AdaptiveLIF(LIF):
        16.10 (2004): 2101-2124.
     """
 
-    probeable = ("spikes", "voltage", "refractory_time", "adaptation")
+    spiking = True
+    state = ("voltage", "refractory_time", "adaptation")
 
     tau_n = NumberParam("tau_n", low=0, low_open=True)
     inc_n = NumberParam("inc_n", low=0)
@@ -636,10 +647,10 @@ class AdaptiveLIF(LIF):
         self.tau_n = tau_n
         self.inc_n = inc_n
 
-    def step_math(self, dt, J, output, voltage, refractory_time, adaptation):
+    def step(self, dt, J, output, voltage, refractory_time, adaptation):
         """Implement the AdaptiveLIF nonlinearity."""
         n = adaptation
-        super().step_math(dt, J - n, output, voltage, refractory_time)
+        super().step(dt, J - n, output, voltage, refractory_time)
         n += (dt / self.tau_n) * (self.inc_n * output - n)
 
 
@@ -683,7 +694,8 @@ class Izhikevich(NeuronType):
        (http://www.izhikevich.org/publications/spikes.pdf)
     """
 
-    probeable = ("spikes", "voltage", "recovery")
+    spiking = True
+    state = ("voltage", "recovery")
 
     tau_recovery = NumberParam("tau_recovery", low=0, low_open=True)
     coupling = NumberParam("coupling", low=0)
@@ -702,13 +714,15 @@ class Izhikevich(NeuronType):
     def rates(self, x, gain, bias):
         """Estimates steady-state firing rate given gain and bias."""
         J = self.current(x, gain, bias)
-        voltage = np.zeros_like(J)
-        recovery = np.zeros_like(J)
         return settled_firingrate(
-            self.step_math, J, [voltage, recovery], settle_time=0.001, sim_time=1.0
+            self.step,
+            J,
+            {"voltage": np.zeros_like(J), "recovery": np.zeros_like(J)},
+            settle_time=0.001,
+            sim_time=1.0,
         )
 
-    def step_math(self, dt, J, spiked, voltage, recovery):
+    def step(self, dt, J, spiked, voltage, recovery):
         """Implement the Izhikevich nonlinearity."""
         # Numerical instability occurs for very low inputs.
         # We'll clip them be greater than some value that was chosen by

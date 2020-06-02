@@ -10,18 +10,18 @@ from nengo.utils.numpy import is_array_like
 class SimNeurons(Operator):
     """Set a neuron model output for the given input current.
 
-    Implements ``neurons.step_math(dt, J, output, *states)``.
+    Implements ``neurons.step(dt, J, output, **state)``.
 
     Parameters
     ----------
     neurons : NeuronType
-        The `.NeuronType`, which defines a ``step_math`` function.
+        The `.NeuronType`, which defines a ``step`` function.
     J : Signal
         The input current.
     output : Signal
         The neuron output signal that will be set.
-    states : list, optional
-        A list of additional neuron state signals set by ``step_math``.
+    state : list, optional
+        A list of additional neuron state signals set by ``step``.
     tag : str, optional
         A label associated with the operator, for debugging purposes.
 
@@ -30,30 +30,33 @@ class SimNeurons(Operator):
     J : Signal
         The input current.
     neurons : NeuronType
-        The `.NeuronType`, which defines a ``step_math`` function.
+        The `.NeuronType`, which defines a ``step`` function.
     output : Signal
         The neuron output signal that will be set.
-    states : list
-        A list of additional neuron state signals set by ``step_math``.
+    state : list
+        A list of additional neuron state signals set by ``step``.
     tag : str or None
         A label associated with the operator, for debugging purposes.
 
     Notes
     -----
-    1. sets ``[output] + states``
+    1. sets ``[output] + state``
     2. incs ``[]``
     3. reads ``[J]``
     4. updates ``[]``
     """
 
-    def __init__(self, neurons, J, output, states=None, tag=None):
+    def __init__(self, neurons, J, output, state=None, tag=None):
         super().__init__(tag=tag)
         self.neurons = neurons
 
-        self.sets = [output] + ([] if states is None else states)
+        self.sets = [output]
         self.incs = []
         self.reads = [J]
         self.updates = []
+
+        self.state = {} if state is None else state
+        self.sets.extend(self.state.values())
 
     @property
     def J(self):
@@ -64,20 +67,16 @@ class SimNeurons(Operator):
         return self.sets[0]
 
     @property
-    def states(self):
-        return self.sets[1:]
-
-    @property
     def _descstr(self):
         return "%s, %s, %s" % (self.neurons, self.J, self.output)
 
     def make_step(self, signals, dt, rng):
         J = signals[self.J]
         output = signals[self.output]
-        states = [signals[state] for state in self.states]
+        state = {name: signals[sig] for name, sig in self.state.items()}
 
         def step_simneurons():
-            self.neurons.step_math(dt, J, output, *states)
+            self.neurons.step(dt, J, output, **state)
 
         return step_simneurons
 
@@ -86,10 +85,9 @@ class SimNeurons(Operator):
 def build_neurons(model, neurontype, neurons):
     """Builds a `.NeuronType` object into a model.
 
-    This build function works with any `.NeuronType` that does not require
-    extra state, like `.RectifiedLinear` and `.LIFRate`. This function adds a
-    `.SimNeurons` operator connecting the input current to the
-    neural output signals.
+    This function adds a `.SimNeurons` operator connecting the input current to the
+    neural output signals, and handles any additional state variables defined
+    within the neuron type.
 
     Parameters
     ----------
@@ -107,36 +105,34 @@ def build_neurons(model, neurontype, neurons):
     """
     dtype = model.sig[neurons]["in"].dtype
     n_neurons = neurons.size_in
-    state_init = neurontype.make_neuron_state(n_neurons, model.dt, dtype=dtype)
+    state_init = neurontype.make_state(n_neurons, model.dt, dtype=dtype)
+    state = {}
 
-    states = []
     for key, init in state_init.items():
         if key in model.sig[neurons]:
             raise BuildError("State name %r overlaps with existing signal name" % key)
 
         if isinstance(init, Distribution):
             raise NotImplementedError()
-        elif is_array_like(init):
-            init = np.asarray(init, dtype=dtype)
-            if init.ndim == 0:
-                init = init * np.ones(n_neurons, dtype=dtype)
-            elif init.ndim == 1 and init.size != n_neurons or init.ndim > 1:
-                raise BuildError(
-                    "State init array must be 0-D, or 1-D of length `n_neurons`"
-                )
-        else:
+
+        if not is_array_like(init):
             raise BuildError("State init must be a distribution or array-like")
 
+        if init.ndim == 1 and init.size != n_neurons or init.ndim > 1:
+            raise BuildError(
+                "State init array must be 0-D, or 1-D of length `n_neurons`"
+            )
+
         model.sig[neurons][key] = Signal(
-            initial_value=init, shape=(n_neurons,), name="%s.%s" % (neurons, key)
+            initial_value=init, name="%s.%s" % (neurons, key)
         )
-        states.append(model.sig[neurons][key])
+        state[key] = model.sig[neurons][key]
 
     model.add_op(
         SimNeurons(
             neurons=neurontype,
             J=model.sig[neurons]["in"],
             output=model.sig[neurons]["out"],
-            states=states,
+            state=state,
         )
     )

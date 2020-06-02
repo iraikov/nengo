@@ -42,6 +42,21 @@ Release history
   read-only, to prevent users from accidentally overwriting them with their own data.
   (`#1545 <https://github.com/nengo/nengo/issues/1545>`__,
   `#1608 <https://github.com/nengo/nengo/pull/1608>`__)
+- The ``NeuronType.step_math`` method has been renamed to ``NeuronType.step``.
+  (`#1609 <https://github.com/nengo/nengo/pull/1609>`__)
+- Neuron types can now create arbitrary state variables without needing to register
+  a new build function. The ``state`` class attribute declares the neuron type's
+  state variables and their default initial values. All ``__init__`` methods accept
+  an ``initial_state`` dictionary for users to override the default initial state
+  values. The ``make_state`` method initializes the state arrays and can be
+  overridden in subclasses if necessary.
+  (`#1609 <https://github.com/nengo/nengo/pull/1609>`__)
+
+**Deprecated**
+
+- ``NeuronType.step`` replaces the ``NeuronType.step_math`` method,
+  which will be removed in Nengo 4.0.0.
+  (`#1609 <https://github.com/nengo/nengo/pull/1609>`__)
 
 **Fixed**
 

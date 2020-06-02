@@ -592,9 +592,11 @@ def test_operators():
     assert fnmatch(
         repr(SimOja(sig, sig, sig, sig, 0.1, 1.0, tag="tag")), "<SimOja 'tag' at 0x*>",
     )
-    assert fnmatch(repr(SimNeurons(LIF(), sig, sig, [sig])), "<SimNeurons at 0x*>")
     assert fnmatch(
-        repr(SimNeurons(LIF(), sig, sig, [sig], tag="tag")),
+        repr(SimNeurons(LIF(), sig, sig, {"sig": sig})), "<SimNeurons at 0x*>"
+    )
+    assert fnmatch(
+        repr(SimNeurons(LIF(), sig, sig, {"sig": sig}, tag="tag")),
         "<SimNeurons 'tag' at 0x*>",
     )
     assert fnmatch(
