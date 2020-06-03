@@ -1,5 +1,3 @@
-import numpy as np
-
 from nengo.builder import Builder, Operator, Signal
 from nengo.dists import Distribution
 from nengo.exceptions import BuildError
@@ -10,7 +8,7 @@ from nengo.utils.numpy import is_array_like
 class SimNeurons(Operator):
     """Set a neuron model output for the given input current.
 
-    Implements ``neurons.step(dt, J, output, **state)``.
+    Implements ``neurons.step(dt, J, **state)``.
 
     Parameters
     ----------
@@ -46,37 +44,38 @@ class SimNeurons(Operator):
     4. updates ``[]``
     """
 
-    def __init__(self, neurons, J, output, state=None, tag=None):
+    def __init__(self, neurons, J, state=None, tag=None):
         super().__init__(tag=tag)
         self.neurons = neurons
 
-        self.sets = [output]
+        self.sets = []
         self.incs = []
         self.reads = [J]
         self.updates = []
 
-        self.state = {} if state is None else state
-        self.sets.extend(self.state.values())
+        self.state = {}
+        if state is not None:
+            for name, sig in state.items():
+                # The signals actually stored in `self.sets` can be modified by the
+                # optimizer. To allow this possibility, we store the index of the
+                # signal in the sets list instead of storing the signal itself.
+                self.state[name] = len(self.sets)
+                self.sets.append(sig)
 
     @property
     def J(self):
         return self.reads[0]
 
     @property
-    def output(self):
-        return self.sets[0]
-
-    @property
     def _descstr(self):
-        return "%s, %s, %s" % (self.neurons, self.J, self.output)
+        return "%s, %s" % (self.neurons, self.J)
 
     def make_step(self, signals, dt, rng):
         J = signals[self.J]
-        output = signals[self.output]
-        state = {name: signals[sig] for name, sig in self.state.items()}
+        state = {name: signals[self.sets[idx]] for name, idx in self.state.items()}
 
         def step_simneurons():
-            self.neurons.step(dt, J, output, **state)
+            self.neurons.step(dt, J, **state)
 
         return step_simneurons
 
@@ -128,11 +127,7 @@ def build_neurons(model, neurontype, neurons):
         )
         state[key] = model.sig[neurons][key]
 
+    model.sig[neurons]["out"] = state[neurontype.state[0]]
     model.add_op(
-        SimNeurons(
-            neurons=neurontype,
-            J=model.sig[neurons]["in"],
-            output=model.sig[neurons]["out"],
-            state=state,
-        )
+        SimNeurons(neurons=neurontype, J=model.sig[neurons]["in"], state=state)
     )
