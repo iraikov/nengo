@@ -6,7 +6,7 @@ import pytest
 import nengo
 import nengo.utils.numpy as npext
 from nengo.dists import Choice, Uniform, UniformHypersphere
-from nengo.exceptions import BuildError, NengoWarning, ValidationError
+from nengo.exceptions import BuildError, NengoWarning
 from nengo.processes import WhiteNoise, FilteredNoise
 from nengo.utils.testing import signals_allclose
 
@@ -388,14 +388,17 @@ def test_noise_copies_ok(Simulator, nl_nodirect, seed, plt, allclose):
 
     process = FilteredNoise(synapse=nengo.Alpha(1.0), dist=Choice([0.5]))
     with nengo.Network(seed=seed) as model:
-        inp, gain, bias = 1, 5, 2
-        model.config[nengo.Ensemble].neuron_type = nl_nodirect()
+        if "spikes" in nl_nodirect.state:
+            neuron_type = nl_nodirect(initial_state={"voltage": Choice([0])})
+        else:
+            neuron_type = nl_nodirect()
+        model.config[nengo.Ensemble].neuron_type = neuron_type
         model.config[nengo.Ensemble].encoders = Choice([[1]])
-        model.config[nengo.Ensemble].gain = Choice([gain])
-        model.config[nengo.Ensemble].bias = Choice([bias])
-        model.config[nengo.Ensemble].initial_phase = Choice([0.5])
+        model.config[nengo.Ensemble].gain = Choice([5])
+        model.config[nengo.Ensemble].bias = Choice([2])
         model.config[nengo.Ensemble].noise = process
-        const = nengo.Node(output=inp)
+        const = nengo.Node(output=1)
+        # Ensembles must have the same seed so that their initial voltages match
         a = nengo.Ensemble(1, 1, noise=process)
         b = nengo.Ensemble(1, 1, noise=process)
         c = nengo.Ensemble(1, 1)  # defaults to noise=process
@@ -489,62 +492,3 @@ def test_pickle(seed, Simulator):
     after = sim.data[unpickled.probe]
 
     assert np.all(before == after)
-
-
-@pytest.mark.parametrize(
-    "neuron_type",
-    [nengo.LIF(), nengo.SpikingRectifiedLinear(), nengo.RegularSpiking(nengo.Tanh())],
-)
-def test_initial_phase(neuron_type, Simulator, seed, plt, allclose):
-    n = 50
-    initial_phases = {
-        "uniform": nengo.dists.Uniform(0, 1),
-        "choice": nengo.dists.Choice([0.5]),
-        "linspace": np.linspace(0.1, 0.9, n),
-    }
-
-    with nengo.Network(seed=seed) as net:
-        probes = {}
-        for key, phase in initial_phases.items():
-            a = nengo.Ensemble(
-                50,
-                1,
-                neuron_type=neuron_type,
-                initial_phase=phase,
-                gain=nengo.dists.Choice([1.0]),
-                bias=nengo.dists.Choice([0.0]),
-            )
-            probes[key] = nengo.Probe(a.neurons, "voltage")
-
-    with Simulator(net) as sim:
-        sim.run(0.1)
-
-    for i, (key, probe) in enumerate(probes.items()):
-        plt.subplot(len(probes), 1, i + 1)
-        plt.plot(sim.trange(), sim.data[probe][:, :15])
-
-    for key, phase in initial_phases.items():
-        probe = probes[key]
-        initial_voltage = sim.data[probe][0]
-        if isinstance(neuron_type, nengo.LIF):  # undo decay
-            initial_voltage = initial_voltage * np.exp(sim.dt / neuron_type.tau_rc)
-
-        if isinstance(phase, nengo.dists.Uniform):
-            histogram, _ = np.histogram(initial_voltage, bins=10)
-            histogram = histogram / histogram.mean()
-            assert np.abs(histogram - 1).mean() < 0.5
-        else:
-            if isinstance(phase, nengo.dists.Distribution):
-                phase = phase.sample(n)
-            assert allclose(initial_voltage, phase, atol=1e-5)
-
-
-def test_bad_initial_phases():
-    with nengo.Network():
-        nengo.Ensemble(2, 3, initial_phase=[0.1, 0.2])
-
-        with pytest.raises(ValidationError, match="initial_phase"):
-            nengo.Ensemble(2, 3, initial_phase=[0.1, 0.2, 0.3])
-
-        with pytest.raises(ValidationError, match="initial_phase"):
-            nengo.Ensemble(2, 3, initial_phase=[0.1])

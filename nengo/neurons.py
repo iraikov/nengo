@@ -2,9 +2,11 @@ import warnings
 
 import numpy as np
 
+from nengo.dists import Choice, Distribution, get_samples, Uniform
 from nengo.exceptions import SimulationError, ValidationError
-from nengo.params import Parameter, NumberParam, FrozenObject
+from nengo.params import DictParam, FrozenObject, NumberParam, Parameter
 from nengo.rc import rc
+from nengo.utils.numpy import is_array_like
 
 
 def settled_firingrate(step, J, state, dt=0.001, settle_time=0.1, sim_time=1.0):
@@ -45,20 +47,44 @@ class NeuronType(FrozenObject):
 
     Attributes
     ----------
-    state : tuple
+    state : {str: Distribution}
         State variables held by the neuron type during simulation.
-        These elements can also be probed in the neuron population.
+        Values in the dict indicate their initial values, or how
+        to obtain those initial values. These elements can also be
+        probed in the neuron population.
     """
 
-    state = ()
+    state = {}
+
+    initial_state = DictParam("initial_state", optional=True)
+
+    def __init__(self, initial_state=None):
+        super().__init__()
+        self.initial_state = initial_state
+        if self.initial_state is not None:
+            for name, value in self.initial_state.items():
+                if name not in self.state:
+                    raise ValidationError(
+                        "State variable %r not recognized; should be one of %s"
+                        % (name, ", ".join(repr(k) for k in self.state)),
+                        attr="initial_state",
+                        obj=self,
+                    )
+                if not (isinstance(value, Distribution) or is_array_like(value)):
+                    raise ValidationError(
+                        "State variable %r must be a distribution or array-like"
+                        % (name,),
+                        attr="initial_state",
+                        obj=self,
+                    )
 
     @property
     def probeable(self):
-        return self.state
+        return tuple(self.state)
 
     @property
     def spiking(self):
-        return len(self.state) > 0 and self.state[0] == "spikes"
+        return "spikes" in self.state
 
     @property
     def step_math(self):
@@ -172,21 +198,16 @@ class NeuronType(FrozenObject):
         bias[:] = J_tops - gain
         return gain, bias
 
-    def make_state(self, n_neurons, dt, dtype=None):
+    def make_state(self, n_neurons, rng=np.random, dtype=None):
         dtype = rc.float_dtype if dtype is None else dtype
-        state = {name: np.zeros(n_neurons, dtype=dtype) for name in self.state}
-        if "voltage" in state:
-            # apply phases to voltages
-            state["voltage"] = phases
-
-        return result
-
-        # # distribute phases equally across states (each neuron will be at a random
-        # # position between 0 and 1 in one of the states, and 0 in all other states)
-        # phase_frac, phase_int = np.modf(phases * len(states))
-        # return OrderedDict(
-        #     (state, (phase_int == i) * phase_frac) for i, state in enumerate(states)
-        # )
+        state = {}
+        initial_state = {} if self.initial_state is None else self.initial_state
+        for name in self.state:
+            dist = initial_state.get(name, self.state[name])
+            state[name] = get_samples(dist, n=n_neurons, d=None, rng=rng).astype(
+                dtype, copy=False
+            )
+        return state
 
     def max_rates_intercepts(self, gain, bias):
         """Compute the max_rates and intercepts given gain and bias.
@@ -320,12 +341,12 @@ class RectifiedLinear(NeuronType):
         amplitude of the output of the neuron.
     """
 
-    state = ("rates",)
+    state = {"rates": Choice([0])}
 
     amplitude = NumberParam("amplitude", low=0, low_open=True)
 
-    def __init__(self, amplitude=1):
-        super().__init__()
+    def __init__(self, amplitude=1, initial_state=None):
+        super().__init__(initial_state)
 
         self.amplitude = amplitude
 
@@ -363,7 +384,7 @@ class SpikingRectifiedLinear(RectifiedLinear):
         amplitude of the output spikes of the neuron.
     """
 
-    state = ("spikes", "voltage")
+    state = {"spikes": Choice([0]), "voltage": Uniform(low=0, high=1)}
 
     def rates(self, x, gain, bias):
         """Use RectifiedLinear to determine rates."""
@@ -390,12 +411,12 @@ class Sigmoid(NeuronType):
     ``f(intercept) = 0.5`` where ``f`` is the pure sigmoid function.
     """
 
-    state = ("rates",)
+    state = {"rates": Choice([0])}
 
     tau_ref = NumberParam("tau_ref", low=0)
 
-    def __init__(self, tau_ref=0.0025):
-        super().__init__()
+    def __init__(self, tau_ref=0.0025, initial_state=None):
+        super().__init__(initial_state)
         self.tau_ref = tau_ref
 
     def gain_bias(self, max_rates, intercepts):
@@ -437,14 +458,14 @@ class LIFRate(NeuronType):
         amplitude of the output spikes of the neuron.
     """
 
-    state = ("rates",)
+    state = {"rates": Choice([0])}
 
     tau_rc = NumberParam("tau_rc", low=0, low_open=True)
     tau_ref = NumberParam("tau_ref", low=0)
     amplitude = NumberParam("amplitude", low=0, low_open=True)
 
-    def __init__(self, tau_rc=0.02, tau_ref=0.002, amplitude=1):
-        super().__init__()
+    def __init__(self, tau_rc=0.02, tau_ref=0.002, amplitude=1, initial_state=None):
+        super().__init__(initial_state)
         self.tau_rc = tau_rc
         self.tau_ref = tau_ref
         self.amplitude = amplitude
@@ -519,12 +540,23 @@ class LIF(LIFRate):
         amplitude of the output spikes of the neuron.
     """
 
-    state = ("spikes", "voltage", "refractory_time")
+    state = {
+        "spikes": Choice([0]),
+        "voltage": Uniform(low=0, high=1),
+        "refractory_time": Choice([0]),
+    }
 
     min_voltage = NumberParam("min_voltage", high=0)
 
-    def __init__(self, tau_rc=0.02, tau_ref=0.002, min_voltage=0, amplitude=1):
-        super().__init__(tau_rc=tau_rc, tau_ref=tau_ref, amplitude=amplitude)
+    def __init__(
+        self, tau_rc=0.02, tau_ref=0.002, min_voltage=0, amplitude=1, initial_state=None
+    ):
+        super().__init__(
+            tau_rc=tau_rc,
+            tau_ref=tau_ref,
+            amplitude=amplitude,
+            initial_state=initial_state,
+        )
         self.min_voltage = min_voltage
 
     def step(self, dt, J, spikes, voltage, refractory_time):
@@ -593,13 +625,26 @@ class AdaptiveLIFRate(LIFRate):
        16.10 (2004): 2101-2124.
     """
 
-    state = ("rates", "adaptation")
+    state = {"rates": Choice([0]), "adaptation": Choice([0])}
 
     tau_n = NumberParam("tau_n", low=0, low_open=True)
     inc_n = NumberParam("inc_n", low=0)
 
-    def __init__(self, tau_n=1, inc_n=0.01, tau_rc=0.02, tau_ref=0.002, amplitude=1):
-        super().__init__(tau_rc=tau_rc, tau_ref=tau_ref, amplitude=amplitude)
+    def __init__(
+        self,
+        tau_n=1,
+        inc_n=0.01,
+        tau_rc=0.02,
+        tau_ref=0.002,
+        amplitude=1,
+        initial_state=None,
+    ):
+        super().__init__(
+            tau_rc=tau_rc,
+            tau_ref=tau_ref,
+            amplitude=amplitude,
+            initial_state=initial_state,
+        )
         self.tau_n = tau_n
         self.inc_n = inc_n
 
@@ -648,7 +693,12 @@ class AdaptiveLIF(LIF):
        16.10 (2004): 2101-2124.
     """
 
-    state = ("spikes", "voltage", "refractory_time", "adaptation")
+    state = {
+        "spikes": Choice([0]),
+        "voltage": Uniform(low=0, high=1),
+        "refractory_time": Choice([0]),
+        "adaptation": Choice([0]),
+    }
 
     tau_n = NumberParam("tau_n", low=0, low_open=True)
     inc_n = NumberParam("inc_n", low=0)
@@ -661,9 +711,14 @@ class AdaptiveLIF(LIF):
         tau_ref=0.002,
         min_voltage=0,
         amplitude=1,
+        initial_state=None,
     ):
         super().__init__(
-            tau_rc=tau_rc, tau_ref=tau_ref, min_voltage=min_voltage, amplitude=amplitude
+            tau_rc=tau_rc,
+            tau_ref=tau_ref,
+            min_voltage=min_voltage,
+            amplitude=amplitude,
+            initial_state=initial_state,
         )
         self.tau_n = tau_n
         self.inc_n = inc_n
@@ -715,7 +770,11 @@ class Izhikevich(NeuronType):
        (http://www.izhikevich.org/publications/spikes.pdf)
     """
 
-    state = ("spikes", "voltage", "recovery")
+    state = {
+        "spikes": Choice([0]),
+        "voltage": Uniform(low=0, high=1),
+        "recovery": Choice([0]),
+    }
 
     tau_recovery = NumberParam("tau_recovery", low=0, low_open=True)
     coupling = NumberParam("coupling", low=0)
@@ -723,9 +782,14 @@ class Izhikevich(NeuronType):
     reset_recovery = NumberParam("reset_recovery")
 
     def __init__(
-        self, tau_recovery=0.02, coupling=0.2, reset_voltage=-65.0, reset_recovery=8.0
+        self,
+        tau_recovery=0.02,
+        coupling=0.2,
+        reset_voltage=-65.0,
+        reset_recovery=8.0,
+        initial_state=None,
     ):
-        super().__init__()
+        super().__init__(initial_state)
         self.tau_recovery = tau_recovery
         self.coupling = coupling
         self.reset_voltage = reset_voltage
