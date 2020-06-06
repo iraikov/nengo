@@ -609,6 +609,7 @@ def test_rates_shaping(rng, nl_nodirect):
 @pytest.mark.parametrize(
     "neuron_type", [nengo.LIF, nengo.SpikingRectifiedLinear],
 )
+@pytest.mark.filterwarnings("ignore:divide by zero")
 def test_initial_state(neuron_type, Simulator, seed, plt, allclose):
     n = 50
     initial_voltage = {
