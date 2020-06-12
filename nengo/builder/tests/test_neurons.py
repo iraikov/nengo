@@ -10,9 +10,7 @@ from nengo.builder.neurons import SimNeurons
 )
 def test_spiking_builders(SpikingType):
     # use a base type with its own state(s), to make sure those states get built
-    base_type = nengo.AdaptiveLIFRate()
-
-    neuron_type = SpikingType(base_type)
+    neuron_type = SpikingType(nengo.AdaptiveLIFRate())
 
     with nengo.Network() as net:
         neurons = nengo.Ensemble(10, 1, neuron_type=neuron_type).neurons
@@ -22,4 +20,5 @@ def test_spiking_builders(SpikingType):
         assert len(ops) == 1
 
         adaptation = sim.model.sig[neurons]["adaptation"]
-        assert sum(adaptation is sig for sig in ops[0].states.values()) == 1
+        # All signals get put in `sets`
+        assert sum(adaptation is sig for sig in ops[0].sets) == 1

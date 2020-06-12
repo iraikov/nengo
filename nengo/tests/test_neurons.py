@@ -33,8 +33,12 @@ from nengo.utils.numpy import rms
 
 # --- define a composite neuron type, used in `nl` (see `pytest_nengo.py`)
 class SpikingTanh(RegularSpiking):
-    def __init__(self, tau_ref=0.0025, amplitude=1.0):
-        super().__init__(base_type=Tanh(tau_ref=tau_ref), amplitude=amplitude)
+    def __init__(self, tau_ref=0.0025, amplitude=1.0, initial_state=None):
+        super().__init__(
+            base_type=Tanh(tau_ref=tau_ref),
+            amplitude=amplitude,
+            initial_state=initial_state,
+        )
 
     @property
     def tau_ref(self):
@@ -720,7 +724,7 @@ def test_initial_state(neuron_type, Simulator, seed, plt, allclose):
             assert allclose(initial_voltage, voltage, atol=1e-5)
 
 
-def test_bad_initial_state(Simulator):
+def test_bad_initial_state(rng, Simulator):
     with pytest.raises(ValidationError, match="State variable 'rates' not recognized"):
         nengo.LIF(initial_state={"rates": nengo.dists.Choice([0])})
 
@@ -728,11 +732,27 @@ def test_bad_initial_state(Simulator):
         nengo.LIF(initial_state={"voltage": "voltage"})
 
     class MyLIF(nengo.LIF):
-        state = {"in": nengo.dists.Choice([0])}
+        def __init__(self, bad_state=False):
+            super().__init__()
+            self.bad_state = bad_state
+            if bad_state:
+                self.state = {"in": nengo.dists.Choice([0])}
+
+        def make_state(self, *args, **kwargs):
+            if self.bad_state:
+                return super().make_state(*args, **kwargs)
+            return {"rng": rng, "dict": {}}
+
+    with nengo.Network() as net:
+        nengo.Ensemble(1, 1, neuron_type=MyLIF(bad_state=True))
+
+    with pytest.raises(BuildError, match="State name 'in' overlaps"):
+        with Simulator(net):
+            pass
 
     with nengo.Network() as net:
         nengo.Ensemble(1, 1, neuron_type=MyLIF())
 
-    with pytest.raises(BuildError, match="State name 'in' overlaps"):
+    with pytest.raises(BuildError, match="State 'dict' is of type 'dict'. Only"):
         with Simulator(net):
             pass

@@ -61,6 +61,7 @@ neuron_types = [
     obj
     for obj in list_objects(nengo.neurons)
     if isstrictsubclass(obj, nengo.neurons.NeuronType)
+    and obj is not nengo.neurons.RatesToSpikesNeuronType
 ]
 solver_types = [
     obj
@@ -369,7 +370,7 @@ def test_supported_fingerprinting(cls, monkeypatch):
     monkeypatch.setitem(sys.modules, "sklearn.utils.extmath", Mock())
 
     args = []
-    if issubclass(cls, nengo.neurons._Spiking):
+    if issubclass(cls, nengo.neurons.RatesToSpikesNeuronType):
         # spiking types require a `base_type` argument, so provide one
         args.append(nengo.neurons.RectifiedLinear())
 
