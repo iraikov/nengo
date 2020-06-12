@@ -125,7 +125,7 @@ def check_seq(tpl):
 
 
 def check_mapping(mapping):
-    # Only support dicts with all string keys and fingerprintable values
+    """Check that all values in dict are fingerprintable."""
     return all(
         isinstance(key, str) and Fingerprint.supports(val)
         for key, val in mapping.items()
